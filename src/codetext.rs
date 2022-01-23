@@ -4,11 +4,12 @@ use std::borrow::Cow;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use druid::piet::{PietTextLayoutBuilder, TextLayoutBuilder, TextStorage as PietTextStorage};
-use druid::text::{
-    Attribute, AttributeSpans, EditableText, EnvUpdateCtx, Link, StringCursor, TextStorage,
+use druid::piet::{
+    PietTextLayoutBuilder, TextAttribute, TextLayoutBuilder, TextStorage as PietTextStorage,
 };
+use druid::text::{EditableText, EnvUpdateCtx, Link, StringCursor, TextStorage};
 use druid::{Color, Data, Env};
 use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, Tree};
 
@@ -16,7 +17,7 @@ use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, Tree};
 #[derive(Clone)]
 pub struct CodeText {
     pub buffer: String,
-    attrs: Arc<AttributeSpans>,
+    attrs: Arc<Vec<TextAttribute>>,
     links: Arc<[Link]>,
     parser: Rc<Mutex<Parser>>,
     query: Rc<Query>,
@@ -31,9 +32,34 @@ impl CodeText {
         parser.set_language(language).unwrap();
         let query_source = tree_sitter_python::HIGHLIGHT_QUERY;
         let query = Query::new(language, query_source).unwrap();
+        // Colors from One Monokai theme: https://github.com/azemoh/vscode-one-monokai
+        let attrs = query
+            .capture_names()
+            .iter()
+            .map(|name| match name.as_str() {
+                "constructor" => color("#61afef"),
+                "constant" => color("#56b6c2"),
+                "function.builtin" => color("#98c379"),
+                "function.method" => color("#98c379"),
+                "function" => color("#98c379"),
+                "variable" => color("#61afef"),
+                "property" => color("#abb2bf"),
+                "type" => color("#61afef"),
+                "constant.builtin" => color("#56b6c2"),
+                "number" => color("#c678dd"),
+                "comment" => color("#676f7d"),
+                "string" => color("#e5c07b"),
+                "escape" => color("#56b6c2"),
+                "punctuation.special" => color("#c678dd"),
+                "embedded" => color("#c678dd"),
+                "operator" => color("#e06c75"),
+                "keyword" => color("#e06c75"),
+                _ => TextAttribute::Underline(true),
+            })
+            .collect();
         let mut code_text = CodeText {
             buffer,
-            attrs: Arc::new(AttributeSpans::new()),
+            attrs: Arc::new(attrs),
             links: Arc::new([]),
             parser: Rc::new(Mutex::new(parser)),
             query: Rc::new(query),
@@ -55,61 +81,20 @@ impl CodeText {
 
     fn update(&mut self) {
         let mut parser = self.parser.lock().unwrap();
+        let start = Instant::now();
         self.tree = parser.parse(&self.buffer, self.tree.as_ref());
-        // Compute new attributes based on detected captures.
-        if let Some(ref tree) = self.tree {
-            let attrs = Arc::make_mut(&mut self.attrs);
-            *attrs = AttributeSpans::new();
-            let mut cursor = QueryCursor::new();
-            let captures = cursor.captures(&self.query, tree.root_node(), self.buffer.as_bytes());
-            let capture_names = self.query.capture_names();
-            let mut last_node_id: usize = 0;
-            for (query_match, capture_id) in captures {
-                let capture = query_match.captures[capture_id];
-                if capture.node.id() == last_node_id {
-                    continue;
-                }
-                last_node_id = capture.node.id();
-                let range = capture.node.byte_range();
-                //let name = capture_names[capture.index as usize].clone();
-                // Colors from One Monokai theme: https://github.com/azemoh/vscode-one-monokai
-                let attr = match capture_names[capture.index as usize].as_str() {
-                    "constructor" => color("#61afef"),
-                    "constant" => color("#56b6c2"),
-                    "function.builtin" => color("#98c379"),
-                    "function.method" => color("#98c379"),
-                    "function" => color("#98c379"),
-                    "variable" => color("#61afef"),
-                    "property" => color("#abb2bf"),
-                    "type" => color("#61afef"),
-                    "constant.builtin" => color("#56b6c2"),
-                    "number" => color("#c678dd"),
-                    "comment" => color("#676f7d"),
-                    "string" => color("#e5c07b"),
-                    "escape" => color("#56b6c2"),
-                    "punctuation.special" => color("#c678dd"),
-                    "embedded" => color("#c678dd"),
-                    "operator" => color("#e06c75"),
-                    "keyword" => color("#e06c75"),
-                    _ => underline(),
-                };
-                if let Some(attr) = attr {
-                    attrs.add(range, attr);
-                }
-            }
-        }
+        eprintln!(
+            "Parsed document in {} us",
+            Instant::now().duration_since(start).as_micros()
+        );
     }
 }
 
-fn color(hex: &str) -> Option<Attribute> {
+const fn color(hex: &str) -> TextAttribute {
     match Color::from_hex_str(hex) {
-        Ok(color) => Some(Attribute::text_color(color)),
-        _ => None,
+        Ok(color) => TextAttribute::TextColor(color),
+        _ => TextAttribute::Underline(true),
     }
-}
-
-const fn underline() -> Option<Attribute> {
-    Some(Attribute::Underline(true))
 }
 
 impl Data for CodeText {
@@ -128,20 +113,51 @@ impl TextStorage for CodeText {
     fn add_attributes(
         &self,
         mut builder: PietTextLayoutBuilder,
-        env: &Env,
+        _env: &Env,
     ) -> PietTextLayoutBuilder {
-        for (range, attr) in self.attrs.to_piet_attrs(env) {
-            builder = builder.range_attribute(range, attr);
+        // Compute new attributes based on detected captures.
+        if let Some(ref tree) = self.tree {
+            let start = Instant::now();
+            let mut cursor = QueryCursor::new();
+            let captures = cursor.captures(&self.query, tree.root_node(), self.buffer.as_bytes());
+            let mut last_node_id: usize = 0;
+            for (query_match, capture_id) in captures {
+                let capture = query_match.captures[capture_id];
+                if capture.node.id() == last_node_id {
+                    continue;
+                }
+                last_node_id = capture.node.id();
+                let range = capture.node.byte_range();
+                builder =
+                    builder.range_attribute(range, clone_attr(&self.attrs[capture.index as usize]));
+            }
+            eprintln!(
+                "Updated attributes in {} us",
+                Instant::now().duration_since(start).as_micros()
+            );
         }
         builder
     }
 
-    fn env_update(&self, ctx: &EnvUpdateCtx) -> bool {
-        self.attrs.env_update(ctx)
+    fn env_update(&self, _ctx: &EnvUpdateCtx) -> bool {
+        // self.attrs.env_update(ctx)
+        false
     }
 
     fn links(&self) -> &[Link] {
         &self.links
+    }
+}
+
+fn clone_attr(attr: &TextAttribute) -> TextAttribute {
+    match attr {
+        TextAttribute::FontFamily(family) => TextAttribute::FontFamily(family.clone()),
+        TextAttribute::FontSize(size) => TextAttribute::FontSize(*size),
+        TextAttribute::Weight(weight) => TextAttribute::Weight(*weight),
+        TextAttribute::TextColor(color) => TextAttribute::TextColor(color.clone()),
+        TextAttribute::Style(style) => TextAttribute::Style(style.clone()),
+        TextAttribute::Underline(underline) => TextAttribute::Underline(*underline),
+        TextAttribute::Strikethrough(strikethrough) => TextAttribute::Strikethrough(*strikethrough),
     }
 }
 
@@ -155,6 +171,7 @@ impl EditableText for CodeText {
         // Edit previous tree for better performance.
         // Not sure if this is 100% correct.
         if let Some(ref mut tree) = self.tree {
+            let start = Instant::now();
             let buffer = self.buffer.as_bytes();
             let mut line = 10;
             let mut col = 10;
@@ -194,7 +211,11 @@ impl EditableText for CodeText {
                 start_position,
                 old_end_position,
                 new_end_position,
-            })
+            });
+            eprintln!(
+                "Edited tree in {} us",
+                Instant::now().duration_since(start).as_micros()
+            );
         }
         self.buffer.edit(range, new);
         self.update();

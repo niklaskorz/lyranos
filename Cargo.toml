@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-druid = { git = "https://github.com/niklaskorz/druid.git", rev = "39c25b12898c096ce5eecd122773c1b88ee39752" }
+druid = { git = "https://github.com/linebender/druid.git", rev = "0079ae31127b3a309c9b0fc8806d52ff68822dd5" }
 open = "2.0.2"
 tree-sitter = "0.20.3"
 tree-sitter-javascript = "0.20.0"
