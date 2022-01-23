@@ -1,0 +1,13 @@
+[package]
+name = "lyranos"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+druid = { git = "https://github.com/niklaskorz/druid.git", rev = "39c25b12898c096ce5eecd122773c1b88ee39752" }
+open = "2.0.2"
+tree-sitter = "0.20.3"
+tree-sitter-javascript = "0.20.0"
+tree-sitter-python = "0.19.1"
